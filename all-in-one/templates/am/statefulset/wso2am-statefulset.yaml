@@ -1,6 +1,6 @@
 # -------------------------------------------------------------------------------------
 #
-# Copyright (c) 2025, WSO2 LLC. (http://www.wso2.com). All Rights Reserved.
+# Copyright (c) 2026, WSO2 LLC. (http://www.wso2.com). All Rights Reserved.
 #
 # This software is the property of WSO2 LLC. and its suppliers, if any.
 # Dissemination of any information or reproduction of any material contained
@@ -9,6 +9,7 @@
 #
 # --------------------------------------------------------------------------------------
 
+{{- if .Values.wso2.deployment.statefulSet.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -18,19 +19,19 @@ spec:
   # Pods are named <fullname>-am-0 and <fullname>-am-1. The entrypoint derives the peer node from this ordinal.
   replicas: {{ if .Values.wso2.deployment.highAvailability }}2{{ else }}1{{ end }}
   serviceName: {{ template "am-all-in-one.fullname" . }}-am-headless
-  podManagementPolicy: {{ .Values.wso2.deployment.podManagementPolicy | default "OrderedReady" }}
+  podManagementPolicy: {{ .Values.wso2.deployment.statefulSet.podManagementPolicy | default "OrderedReady" }}
   # Pods are replaced one at a time, highest ordinal first; the next pod is replaced only after
   # the updated pod has been Ready for minReadySeconds, so one node keeps serving traffic in HA mode.
   updateStrategy:
     type: RollingUpdate
-  minReadySeconds: {{ .Values.wso2.deployment.minReadySeconds | default 0 }}
+  minReadySeconds: {{ .Values.wso2.deployment.statefulSet.minReadySeconds | default 0 }}
   selector:
     matchLabels:
       deployment: {{ template "am-all-in-one.fullname" . }}-am
   template:
     metadata:
       annotations:
-        checksum.am.conf: {{ include (print $.Template.BasePath "/am/statefulset/wso2am-conf.yaml") . | sha256sum }}
+        checksum.am.conf: {{ include (print $.Template.BasePath "/am/instance-1/wso2am-conf.yaml") . | sha256sum }}
         checksum.am.conf.entrypoint: {{ include (print $.Template.BasePath "/am/wso2am-conf-entrypoint.yaml") . | sha256sum }}
         checksum.am.conf.log4j2: {{ include (print $.Template.BasePath "/am/wso2am-conf-log4j2.yaml") . | sha256sum }}
         checksum.am.conf.secret-conf: {{ include (print $.Template.BasePath "/am/wso2am-conf-secret-conf.yaml") . | sha256sum }}
@@ -61,7 +62,7 @@ spec:
       {{- else if .Values.gcp.enabled }}
       serviceAccountName: {{ .Values.gcp.serviceAccountName }}
       {{- else if .Values.azure.enabled }}
-      serviceAccountName: {{ .Values.azure.serviceAccountName }}
+      serviceAccountName: {{ .Values.azure.serviceAccountName | default .Values.azure.serviceAccount }}
       {{- end }}
       securityContext:
         seccompProfile:
@@ -94,6 +95,17 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            # Kubernetes identity of the pod, used by the entrypoint to resolve the peer node. Not derived from
+            # $HOSTNAME, which spec.hostname can override. The pod-index label is set by the StatefulSet controller
+            # on Kubernetes 1.28+ (empty on older versions, where the ordinal is taken from the pod name).
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_ORDINAL
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
             - name: JVM_MEM_OPTS
               value: "-Xms{{ .Values.wso2.deployment.resources.jvm.memory.xms }} -Xmx{{ .Values.wso2.deployment.resources.jvm.memory.xmx }}"
             {{- if and .Values.wso2.apim.configurations.existingSecret.secretName .Values.wso2.apim.configurations.existingSecret.adminPasswordKey }}
@@ -171,14 +183,14 @@ spec:
               command:
                 - /bin/sh
                 - -c
-                - timeout 1 bash -c "</dev/tcp/localhost/9443"
+                - timeout 1 bash -c "</dev/tcp/localhost/{{ add 9443 (.Values.wso2.apim.portOffset | default 0) }}"
             initialDelaySeconds: {{ .Values.wso2.deployment.startupProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.wso2.deployment.startupProbe.periodSeconds }}
             failureThreshold: {{ .Values.wso2.deployment.startupProbe.failureThreshold }}
           livenessProbe:
             httpGet:
               path: /services/Version
-              port: 9763
+              port: {{ add 9763 (.Values.wso2.apim.portOffset | default 0) }}
             initialDelaySeconds: {{ .Values.wso2.deployment.livenessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.wso2.deployment.livenessProbe.periodSeconds }}
             failureThreshold: {{ .Values.wso2.deployment.livenessProbe.failureThreshold }}
@@ -194,12 +206,12 @@ spec:
                 - >
                   { test -f /tmp/.apim-server-started ||
                   { grep -qs "WSO2 Carbon started" "${WSO2_SERVER_HOME}/repository/logs/wso2carbon.log" && touch /tmp/.apim-server-started; }; } &&
-                  curl -sk -f -o /dev/null -m {{ .Values.wso2.deployment.readinessProbe.timeoutSeconds | default 5 }} https://localhost:9443/api/am/gateway/v2/server-startup-healthcheck
+                  curl -sk -f -o /dev/null -m {{ .Values.wso2.deployment.readinessProbe.timeoutSeconds | default 5 }} https://localhost:{{ add 9443 (.Values.wso2.apim.portOffset | default 0) }}/api/am/gateway/v2/server-startup-healthcheck
             timeoutSeconds: {{ .Values.wso2.deployment.readinessProbe.timeoutSeconds | default 5 }}
             {{- else }}
             httpGet:
               path: /api/am/gateway/v2/server-startup-healthcheck
-              port: 9443
+              port: {{ add 9443 (.Values.wso2.apim.portOffset | default 0) }}
               scheme: HTTPS
             {{- end }}
             initialDelaySeconds: {{ .Values.wso2.deployment.readinessProbe.initialDelaySeconds }}
@@ -321,7 +333,7 @@ spec:
       volumes:
         - name: wso2am-conf
           configMap:
-            name: {{ template "am-all-in-one.fullname" . }}-am-conf
+            name: {{ template "am-all-in-one.fullname" . }}-am-conf-1
             defaultMode: 0447
         - name: wso2am-entrypoint
           configMap:
@@ -364,7 +376,7 @@ spec:
             volumeAttributes:
               secretProviderClass: {{ .Values.azure.keyVault.secretProviderClass }}
             nodePublishSecretRef:
-              name: {{ .Values.azure.keyVault.activeDirectory.servicePrincipal.credentialsSecretName }}
+              name: {{ .Values.azure.keyVault.activeDirectory.servicePrincipal.credentialsSecretName | default (printf "%s-secret-store-csi" (include "am-all-in-one.fullname" .)) }}
             {{- else if .Values.aws.enabled }}
             volumeAttributes:
               secretProviderClass: {{ .Values.aws.secretsManager.secretProviderClass }}
@@ -392,7 +404,7 @@ spec:
         name: wso2am-local-carbondb
       spec:
         accessModes:
-          - {{ $persistence.accessMode }}
+          - {{ $persistence.accessMode | default "ReadWriteOnce" }}
         {{- if $persistence.storageClass }}
         storageClassName: {{ $persistence.storageClass }}
         {{- end }}
@@ -403,7 +415,7 @@ spec:
         name: wso2am-solr
       spec:
         accessModes:
-          - {{ $persistence.accessMode }}
+          - {{ $persistence.accessMode | default "ReadWriteOnce" }}
         {{- if $persistence.storageClass }}
         storageClassName: {{ $persistence.storageClass }}
         {{- end }}
@@ -411,3 +423,4 @@ spec:
           requests:
             storage: {{ $persistence.capacity.solrIndexedData }}
   {{- end }}
+{{- end }}

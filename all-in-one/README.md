@@ -4,6 +4,44 @@
 
 A Helm chart for the deployment of WSO2 API Manager all-in-one distribution.
 
+## StatefulSet mode
+
+By default each API Manager node runs as its own Deployment (`<fullname>-am-deployment-1` and, with
+`wso2.deployment.highAvailability: true`, `<fullname>-am-deployment-2`) using the `Recreate` strategy, so updating a node
+stops it before its replacement starts.
+
+Set `wso2.deployment.statefulSet.enabled: true` to run the nodes as a single StatefulSet (`<fullname>-am`, pods
+`<fullname>-am-0` and `<fullname>-am-1` in HA mode) instead. This enables zero-downtime rolling updates in HA mode:
+
+- Pods are replaced one at a time (pod 1 first, then pod 0). The next pod is replaced only after the updated pod has been
+  Ready for `wso2.deployment.statefulSet.minReadySeconds`, so one node keeps serving traffic. Without HA there is a single
+  pod, so an update still restarts it.
+- Both nodes share one `deployment.toml`. The only node-specific value, the peer node used for throttling event
+  duplication (`event_duplicate_url`), is resolved at startup by the entrypoint from the pod ordinal.
+- `<fullname>-am-service-1` and `<fullname>-am-service-2` select pod 0 and pod 1. A headless governing service
+  (`<fullname>-am-headless`) is added.
+- With `wso2.deployment.persistence.solrIndexing.enabled`, each pod gets its own volumes from `volumeClaimTemplates`
+  (`wso2.deployment.persistence.solrIndexing.storageClass` / `accessMode`), so the H2 local database and the Solr index
+  are never shared between API Manager processes. The static cloud volumes (`aws.efs`, `gcp.fs`, `azure.persistence`)
+  are used only in Deployment mode.
+- `wso2.deployment.statefulSet.podManagementPolicy: OrderedReady` starts pod 1 only after pod 0 is Ready, so a single
+  node initializes an empty database.
+
+Notes:
+
+- Rolling updates assume both versions can run side by side against the same databases (e.g. updates, image or
+  configuration changes). Upgrades that migrate the database schema still need a planned upgrade procedure.
+- Switching an existing release between Deployment and StatefulSet mode recreates the API Manager pods.
+- `volumeClaimTemplates` cannot be changed on an existing StatefulSet. To toggle Solr indexing persistence (or change its
+  storage class, capacity or access mode) afterwards, run `kubectl delete statefulset <fullname>-am --cascade=orphan`
+  and `helm upgrade` again.
+
+## Readiness
+
+With `wso2.deployment.readinessProbe.waitForServerStartup: true` (default) a pod becomes Ready only after the server has
+fully started (`WSO2 Carbon started`) and the gateway startup health check passes. With the health check alone a new pod
+can receive traffic before the throttle data publisher is initialized, so throttling events are dropped.
+
 ## Values
 
 | Key | Type | Default | Description |
@@ -57,7 +95,7 @@ A Helm chart for the deployment of WSO2 API Manager all-in-one distribution.
 | gcp.secretsManager.secret.secretVersion | string | `""` | Version of the secret |
 | gcp.secretsManager.secretProviderClass | string | `""` | Secret provider class |
 | gcp.serviceAccountName | string | `""` | Service Account with access to read secrets |
-| kubernetes.configMaps | object | `{"scripts":{"defaultMode":"0407"}}` | Set UNIX permissions over the executable scripts |
+| kubernetes.configMaps | object | `{"scripts":{"defaultMode":"0457"}}` | Set UNIX permissions over the executable scripts |
 | kubernetes.extraVolumeMounts | list | `[]` | Mount extra volumes to the deployment pods, e.g to mount secrets extraVolumeMounts:   - name: my-secret     mountPath: /opt/wso2/secrets     readOnly: true |
 | kubernetes.extraVolumes | list | `[]` | Define the extra volumes to be mounted extraVolumes:   - name: my-secret     secret:       secretName: my-k8s-secret |
 | kubernetes.gatewayAPI | object | `{"backendTLSPolicy":{"caCertificateConfigMap":"","enabled":false,"hostname":""},"backendTrafficPolicy":{"cookie":{"name":"WSO2_CP_STICKY_SESSION","ttl":"0s"},"enabled":false},"defaultConfigMapCreation":false,"enabled":false,"gateway":{"annotations":{},"enabled":false,"filters":[],"hostname":"gw.wso2.com"},"gatewayName":"","management":{"annotations":{},"enabled":false,"filters":[],"hostname":"am.wso2.com"},"websocket":{"annotations":{},"enabled":false,"filters":[],"hostname":"websocket.wso2.com"},"websub":{"annotations":{},"enabled":false,"filters":[],"hostname":"websub.wso2.com"}}` | Kubernetes Gateway API configurations (alternative to Ingress) Requires Gateway API CRDs to be installed in the cluster The Gateway resource must be created externally before deploying this chart See docs/assets/sample-gateway.yaml for an example Gateway manifest |
@@ -173,7 +211,7 @@ A Helm chart for the deployment of WSO2 API Manager all-in-one distribution.
 | wso2.apim.configurations.eventListeners[0].type | string | `"org.wso2.carbon.identity.core.handler.AbstractIdentityHandler"` |  |
 | wso2.apim.configurations.existingSecret | object | `{"adminPasswordKey":"","apimDBPasswordKey":"","secretName":"","sharedDBPasswordKey":""}` | Read passwords from a common secret |
 | wso2.apim.configurations.extraConfigs | string | `nil` | Add custom configurations to deployment.toml. |
-| wso2.apim.configurations.gateway.environments | list | `[{"description":"This is a hybrid gateway that handles both production and sandbox token traffic.","displayInApiConsole":true,"gatewayType":"Regular","httpHostname":"gw.wso2.com","name":"Default","provider":"wso2","serviceName":"wso2am-gateway-service","servicePort":9443,"showAsTokenEndpointUrl":true,"type":"hybrid","visibility":null,"websubHostname":"websub.wso2.com","wsHostname":"websocket.wso2.com"}]` | APIM Gateway environments |
+| wso2.apim.configurations.gateway.environments | list | `[{"description":"This is a hybrid gateway that handles both production and sandbox token traffic.","displayInApiConsole":true,"gatewayType":"Regular","httpHostname":"gw.wso2.com","name":"Default","provider":"wso2","serviceName":"localhost","servicePort":9443,"showAsTokenEndpointUrl":true,"type":"hybrid","visibility":null,"websubHostname":"websub.wso2.com","wsHostname":"websocket.wso2.com"}]` | APIM Gateway environments |
 | wso2.apim.configurations.gatewayNotification.cleanUp.dataRetentionPeriod | string | `"30d"` |  |
 | wso2.apim.configurations.gatewayNotification.cleanUp.expiryTime | string | `"2m"` |  |
 | wso2.apim.configurations.gatewayNotification.deploymentAck.batchInterval | string | `"2s"` |  |
@@ -353,12 +391,16 @@ A Helm chart for the deployment of WSO2 API Manager all-in-one distribution.
 | wso2.deployment.persistence.solrIndexing | object | `{"capacity":{"carbonDatabase":"50M","solrIndexedData":"50M"},"enabled":false}` | Persistent runtime artifacts for Apache Solr-based indexing |
 | wso2.deployment.persistence.solrIndexing.capacity.carbonDatabase | string | `"50M"` | For persisting the H2 based local Carbon database file |
 | wso2.deployment.persistence.solrIndexing.capacity.solrIndexedData | string | `"50M"` | For persisting the indexed solr data |
+| wso2.deployment.persistence.solrIndexing.accessMode | string | `"ReadWriteOnce"` | StatefulSet mode only: access mode of the per-pod volumes |
 | wso2.deployment.persistence.solrIndexing.enabled | bool | `false` | Indicates if persistence of the runtime artifacts for Apache Solr-based indexing is enabled By default, this is disabled |
+| wso2.deployment.persistence.solrIndexing.storageClass | string | `""` | StatefulSet mode only: storage class of the per-pod volumes created from volumeClaimTemplates. Leave empty to use the cluster default storage class. The cloud specific static volumes (aws.efs, gcp.fs, azure.persistence) are used only in Deployment mode. |
 | wso2.deployment.pod.annotations | object | `{}` | Annotations for pods |
 | wso2.deployment.pod.labels | object | `{}` | Labels for pods |
 | wso2.deployment.readinessProbe.failureThreshold | int | `5` | Minimum consecutive successes for the probe to be considered successful after having failed |
 | wso2.deployment.readinessProbe.initialDelaySeconds | int | `60` | Number of seconds after the container has started before readiness probes are initiated |
 | wso2.deployment.readinessProbe.periodSeconds | int | `10` | How often (in seconds) to perform the probe |
+| wso2.deployment.readinessProbe.timeoutSeconds | int | `5` | Number of seconds after which the readiness probe times out |
+| wso2.deployment.readinessProbe.waitForServerStartup | bool | `true` | Mark the pod Ready only after the server has fully started ("WSO2 Carbon started" in repository/logs/wso2carbon.log), in addition to the gateway startup health check. Requires the CARBON_LOGFILE log4j2 appender; set to false to use only the health check. |
 | wso2.deployment.resources.jvm.memory.xms | string | `"2048m"` | JVM heap memory Xms |
 | wso2.deployment.resources.jvm.memory.xmx | string | `"2048m"` | JVM heap memory Xmx |
 | wso2.deployment.resources.limits.cpu | string | `"3000m"` | CPU limit for API Manager |
@@ -368,6 +410,9 @@ A Helm chart for the deployment of WSO2 API Manager all-in-one distribution.
 | wso2.deployment.startupProbe.failureThreshold | int | `5` | Minimum consecutive successes for the probe to be considered successful after having failed |
 | wso2.deployment.startupProbe.initialDelaySeconds | int | `60` | Number of seconds after the container has started before startup probes are initiated |
 | wso2.deployment.startupProbe.periodSeconds | int | `10` | How often (in seconds) to perform the probe |
+| wso2.deployment.statefulSet.enabled | bool | `false` | Deploy API Manager as a StatefulSet (pods <fullname>-am-0 and <fullname>-am-1 in HA mode) instead of the per-node Deployments. Enables zero-downtime rolling updates in HA mode. See [StatefulSet mode](#statefulset-mode). |
+| wso2.deployment.statefulSet.minReadySeconds | int | `30` | Seconds an updated pod must stay Ready before the StatefulSet moves on to the next pod during a rolling update |
+| wso2.deployment.statefulSet.podManagementPolicy | string | `"OrderedReady"` | StatefulSet pod management policy. Only affects scaling (e.g. initial creation); rolling updates always replace one pod at a time. OrderedReady starts pod 1 only after pod 0 is Ready, so a single node initializes an empty database. |
 | wso2.moesifAnalytics | object | `{"enabled":false,"key":"YOUR_MOESIF_API_KEY_HERE","moesif_base_url":"https://api.moesif.net","send_headers":false}` | Moesif Analytics Parameters |
 | wso2.moesifAnalytics.key | string | `"YOUR_MOESIF_API_KEY_HERE"` | Moesif API key |
 | wso2.moesifAnalytics.moesif_base_url | string | `"https://api.moesif.net"` | Moesif base URL |

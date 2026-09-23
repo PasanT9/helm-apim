@@ -96,5 +96,6 @@ Check if all the governance.scheduler configuration values are empty.
 
 {{- define "dockerconfigjson" -}}
 {{- $auth := printf "%s:%s" .Values.wso2.deployment.image.imagePullSecrets.username .Values.wso2.deployment.image.imagePullSecrets.password | b64enc -}}
-{{- printf "{\"auths\":{\"%s\":{\"username\":\"%s\",\"password\":\"%s\",\"auth\":\"%s\"}}}" .Values.wso2.deployment.image.registry .Values.wso2.deployment.image.imagePullSecrets.username .Values.wso2.deployment.image.imagePullSecrets.password $auth | b64enc -}}
+{{- $entry := dict "username" .Values.wso2.deployment.image.imagePullSecrets.username "password" .Values.wso2.deployment.image.imagePullSecrets.password "auth" $auth -}}
+{{- dict "auths" (dict .Values.wso2.deployment.image.registry $entry) | toJson | b64enc -}}
 {{- end -}}

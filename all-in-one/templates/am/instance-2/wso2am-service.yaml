@@ -19,7 +19,11 @@ spec:
   # label keys and values that must match in order to receive traffic for this service
   selector:
     deployment: {{ template "am-all-in-one.fullname" . }}-am
+    {{- if .Values.wso2.deployment.statefulSet.enabled }}
+    statefulset.kubernetes.io/pod-name: {{ template "am-all-in-one.fullname" . }}-am-1
+    {{- else }}
     node: {{ template "am-all-in-one.fullname" . }}-am-2
+    {{- end }}
   ports:
     # ports that this service should serve on
     - name: pass-through-http
