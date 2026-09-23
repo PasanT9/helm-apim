@@ -376,7 +376,7 @@ spec:
             volumeAttributes:
               secretProviderClass: {{ .Values.azure.keyVault.secretProviderClass }}
             nodePublishSecretRef:
-              name: {{ .Values.azure.keyVault.activeDirectory.servicePrincipal.credentialsSecretName | default (printf "%s-secret-store-csi" (include "am-all-in-one.fullname" .)) }}
+              name: {{ include "am-all-in-one.secretStoreCsiSecretName" . }}
             {{- else if .Values.aws.enabled }}
             volumeAttributes:
               secretProviderClass: {{ .Values.aws.secretsManager.secretProviderClass }}
