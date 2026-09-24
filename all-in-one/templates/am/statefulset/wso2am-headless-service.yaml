@@ -10,7 +10,9 @@
 # --------------------------------------------------------------------------------------
 
 {{- if .Values.wso2.deployment.statefulSet.enabled }}
-# Governing service of the API Manager StatefulSet (gives each pod a stable DNS identity)
+# Governing service of the API Manager StatefulSet (spec.serviceName). It only gives each pod a stable DNS name
+# (<fullname>-am-<n>.<fullname>-am-headless); no traffic goes through it, so it defines no ports. The nodes reach
+# each other through <fullname>-am-service-1/-2, and clients through <fullname>-am-service.
 apiVersion: v1
 kind: Service
 metadata:
@@ -21,8 +23,4 @@ spec:
   publishNotReadyAddresses: true
   selector:
     deployment: {{ template "am-all-in-one.fullname" . }}-am
-  ports:
-    - name: jms-tcp
-      protocol: TCP
-      port: {{ add 5672 (.Values.wso2.apim.portOffset | default 0) }}
 {{- end }}

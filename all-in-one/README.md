@@ -20,10 +20,9 @@ Set `wso2.deployment.statefulSet.enabled: true` to run the nodes as a single Sta
   duplication (`event_duplicate_url`), is resolved at startup by the entrypoint from the pod ordinal.
 - `<fullname>-am-service-1` and `<fullname>-am-service-2` select pod 0 and pod 1. A headless governing service
   (`<fullname>-am-headless`) is added.
-- With `wso2.deployment.persistence.solrIndexing.enabled`, each pod gets its own volumes from `volumeClaimTemplates`
-  (`wso2.deployment.persistence.solrIndexing.storageClass` / `accessMode`), so the H2 local database and the Solr index
-  are never shared between API Manager processes. The static cloud volumes (`aws.efs`, `gcp.fs`, `azure.persistence`)
-  are used only in Deployment mode.
+- With `wso2.deployment.persistence.solrIndexing.enabled`, each pod gets its own volumes from `volumeClaimTemplates`,
+  so the H2 local database and the Solr index are never shared between API Manager processes. See
+  [Storage in StatefulSet mode](#storage-in-statefulset-mode).
 - `wso2.deployment.statefulSet.podManagementPolicy: OrderedReady` starts pod 1 only after pod 0 is Ready, so a single
   node initializes an empty database.
 
@@ -32,9 +31,83 @@ Notes:
 - Rolling updates assume both versions can run side by side against the same databases (e.g. updates, image or
   configuration changes). Upgrades that migrate the database schema still need a planned upgrade procedure.
 - Switching an existing release between Deployment and StatefulSet mode recreates the API Manager pods.
+- The StatefulSet name (`<fullname>-am`) can have at most 52 characters, otherwise Kubernetes cannot create its pods and the
+  chart fails with an error. Use a shorter release name or set `fullnameOverride` (at most 49 characters).
 - `volumeClaimTemplates` cannot be changed on an existing StatefulSet. To toggle Solr indexing persistence (or change its
   storage class, capacity or access mode) afterwards, run `kubectl delete statefulset <fullname>-am --cascade=orphan`
   and `helm upgrade` again.
+
+### Storage in StatefulSet mode
+
+Only relevant when `wso2.deployment.persistence.solrIndexing.enabled` is `true` (disabled by default; without it the H2
+local database and the Solr index stay inside each container and are rebuilt on restart).
+
+The chart does not create storage classes in StatefulSet mode. The same rule applies on every cloud provider:
+
+- The StatefulSet creates two PersistentVolumeClaims per pod (`wso2am-local-carbondb-<fullname>-am-<n>` and
+  `wso2am-solr-<fullname>-am-<n>`) with `wso2.deployment.persistence.solrIndexing.storageClass`, `accessMode`
+  (default `ReadWriteOnce`) and `capacity`.
+- If `storageClass` is empty, the cluster default storage class is used. Check it with `kubectl get storageclass`
+  (the default one is marked `(default)`).
+- The volumes are provisioned dynamically by that storage class. Each pod has its own volumes, so a shared (RWX) file
+  system is not required.
+- The static cloud volumes used in Deployment mode (`aws.efs`, `gcp.fs`, `azure.persistence`) are not used.
+
+Block storage is the simplest option, but a volume stays in one availability zone, so its pod can only be scheduled in
+that zone. A shared file system lets pods move between zones.
+
+| Cloud | Block storage (zonal) | Shared file system (moves across zones) |
+|-------|-----------------------|-----------------------------------------|
+| AWS (EKS) | EBS, e.g. `gp3` | EFS |
+| Azure (AKS) | `managed-csi` (built in, default) | `azurefile-csi` (built in) |
+| GCP (GKE) | `standard-rwo` / `premium-rwo` (built in, default) | Filestore, e.g. `standard-rwx` |
+
+Setup per cloud provider:
+
+- **Azure (AKS):** no setup is needed. Leave `storageClass` empty for `managed-csi`, or set it to `azurefile-csi`.
+- **GCP (GKE):** no setup is needed for `standard-rwo` (the default). For Filestore, enable the Filestore CSI driver
+  (`gcloud container clusters update <cluster> --update-addons=GcpFilestoreCsiDriver=ENABLED`) and set `storageClass`
+  to a Filestore class such as `standard-rwx`. Each volume provisions its own Filestore instance (1 TiB or more), so an
+  HA installation with persistence creates four instances.
+- **AWS (EKS) with EBS:** install the Amazon EBS CSI driver add-on. If the cluster has no default storage class (or a
+  `gp3` class is preferred), create one and set `storageClass` to it:
+
+  ```yaml
+  apiVersion: storage.k8s.io/v1
+  kind: StorageClass
+  metadata:
+    name: gp3
+  provisioner: ebs.csi.aws.com
+  parameters:
+    type: gp3
+  volumeBindingMode: WaitForFirstConsumer
+  ```
+
+- **AWS (EKS) with EFS:** create the EFS file system with mount targets in the subnets of the worker nodes (NFS, port
+  2049, allowed from the nodes), install the Amazon EFS CSI driver, and create a storage class for dynamic
+  provisioning. The driver creates one access point per volume, so no access points need to be created in advance. The
+  EFS CSI controller role needs `elasticfilesystem:CreateAccessPoint`, `elasticfilesystem:DeleteAccessPoint`,
+  `elasticfilesystem:TagResource` and `elasticfilesystem:DescribeAccessPoints`.
+
+  ```yaml
+  apiVersion: storage.k8s.io/v1
+  kind: StorageClass
+  metadata:
+    name: efs-sc
+  provisioner: efs.csi.aws.com
+  parameters:
+    provisioningMode: efs-ap
+    fileSystemId: <EFS file system ID>
+    directoryPerms: "0777"
+    uid: "10001"    # kubernetes.securityContext.runAsUser
+    gid: "10001"    # kubernetes.securityContext.runAsGroup
+  ```
+
+  Then set `wso2.deployment.persistence.solrIndexing.storageClass: efs-sc`.
+
+The PersistentVolumeClaims are kept when the release is uninstalled or HA is disabled, and they are reused when the pods
+come back. Delete them explicitly (`kubectl delete pvc <name>`) to remove the data; whether the underlying disk or share
+is deleted as well depends on the `reclaimPolicy` of the storage class.
 
 ## Readiness
 
@@ -95,7 +168,7 @@ can receive traffic before the throttle data publisher is initialized, so thrott
 | gcp.secretsManager.secret.secretVersion | string | `""` | Version of the secret |
 | gcp.secretsManager.secretProviderClass | string | `""` | Secret provider class |
 | gcp.serviceAccountName | string | `""` | Service Account with access to read secrets |
-| kubernetes.configMaps | object | `{"scripts":{"defaultMode":"0457"}}` | Set UNIX permissions over the executable scripts |
+| kubernetes.configMaps | object | `{"scripts":{"defaultMode":"0407"}}` | Set UNIX permissions over the executable scripts |
 | kubernetes.extraVolumeMounts | list | `[]` | Mount extra volumes to the deployment pods, e.g to mount secrets extraVolumeMounts:   - name: my-secret     mountPath: /opt/wso2/secrets     readOnly: true |
 | kubernetes.extraVolumes | list | `[]` | Define the extra volumes to be mounted extraVolumes:   - name: my-secret     secret:       secretName: my-k8s-secret |
 | kubernetes.gatewayAPI | object | `{"backendTLSPolicy":{"caCertificateConfigMap":"","enabled":false,"hostname":""},"backendTrafficPolicy":{"cookie":{"name":"WSO2_CP_STICKY_SESSION","ttl":"0s"},"enabled":false},"defaultConfigMapCreation":false,"enabled":false,"gateway":{"annotations":{},"enabled":false,"filters":[],"hostname":"gw.wso2.com"},"gatewayName":"","management":{"annotations":{},"enabled":false,"filters":[],"hostname":"am.wso2.com"},"websocket":{"annotations":{},"enabled":false,"filters":[],"hostname":"websocket.wso2.com"},"websub":{"annotations":{},"enabled":false,"filters":[],"hostname":"websub.wso2.com"}}` | Kubernetes Gateway API configurations (alternative to Ingress) Requires Gateway API CRDs to be installed in the cluster The Gateway resource must be created externally before deploying this chart See docs/assets/sample-gateway.yaml for an example Gateway manifest |
@@ -124,6 +197,7 @@ can receive traffic before the throttle data publisher is initialized, so thrott
 | kubernetes.gatewayAPI.websub.enabled | bool | `false` | Enable HTTPRoute for Websub |
 | kubernetes.gatewayAPI.websub.filters | list | `[]` | HTTPRoute filters (optional) |
 | kubernetes.gatewayAPI.websub.hostname | string | `"websub.wso2.com"` | Hostname for Websub |
+| kubernetes.ingress.enabled | bool | `true` | Create the Kubernetes Ingress resources (each one can also be disabled individually). Enable either Ingress or Gateway API (kubernetes.gatewayAPI.enabled). If both are enabled, Gateway API takes precedence and no Ingress resources are created. |
 | kubernetes.ingress.gateway.annotations | object | `{"nginx.ingress.kubernetes.io/backend-protocol":"HTTPS","nginx.ingress.kubernetes.io/proxy-buffer-size":"8k","nginx.ingress.kubernetes.io/proxy-buffering":"on"}` | Ingress annotations for Gateway pass-through |
 | kubernetes.ingress.gateway.enabled | bool | `true` |  |
 | kubernetes.ingress.gateway.hostname | string | `"gw.wso2.com"` | Ingress hostname for Gateway pass-through |

@@ -58,7 +58,7 @@ spec:
       {{- else if .Values.gcp.enabled }}
       serviceAccountName: {{ .Values.gcp.serviceAccountName }}
       {{- else if .Values.azure.enabled }}
-      serviceAccountName: {{ .Values.azure.serviceAccountName | default .Values.azure.serviceAccount }}
+      serviceAccountName: {{ .Values.azure.serviceAccountName }}
       {{- end }}
       securityContext:
         seccompProfile:
@@ -313,7 +313,7 @@ spec:
         - name: wso2am-conf
           configMap:
             name: {{ template "am-all-in-one.fullname" . }}-am-conf-2
-            defaultMode: 0447
+            defaultMode: 0407
         - name: wso2am-entrypoint
           configMap:
             name: {{ template "am-all-in-one.fullname" . }}-conf-entrypoint
@@ -321,7 +321,7 @@ spec:
         - name: wso2am-log4j2
           configMap:
             name: {{ template "am-all-in-one.fullname" . }}-conf-log4j2
-            defaultMode: 0447
+            defaultMode: 0407
         {{- if .Values.wso2.apim.mountStartupScript }}
         - name: wso2am-sh-conf
           configMap:
@@ -332,21 +332,21 @@ spec:
         - name: wso2am-conf-admin-settings
           configMap:
             name: {{ template "am-all-in-one.fullname" . }}-conf-admin-settings
-            defaultMode: 0447
+            defaultMode: 0407
         - name: wso2am-conf-devportal-settings
           configMap:
             name: {{ template "am-all-in-one.fullname" . }}-conf-devportal-settings
-            defaultMode: 0447
+            defaultMode: 0407
         - name: wso2am-conf-publisher-settings
           configMap:
             name: {{ template "am-all-in-one.fullname" . }}-conf-publisher-settings
-            defaultMode: 0447
+            defaultMode: 0407
         {{- end }}
         {{- if .Values.wso2.apim.secureVaultEnabled }}
         - name: wso2am-secret-conf
           configMap:
             name: {{ template "am-all-in-one.fullname" . }}-conf-secret-conf
-            defaultMode: 0447
+            defaultMode: 0407
         - name: wso2am-secret-store-csi
           csi:
             driver: secrets-store.csi.k8s.io

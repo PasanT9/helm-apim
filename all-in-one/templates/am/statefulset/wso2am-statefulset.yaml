@@ -10,6 +10,11 @@
 # --------------------------------------------------------------------------------------
 
 {{- if .Values.wso2.deployment.statefulSet.enabled }}
+{{- $stsName := printf "%s-am" (include "am-all-in-one.fullname" .) }}
+{{- /* Kubernetes adds the controller-revision-hash label (<name>-<hash>, max 63 chars) to StatefulSet pods */}}
+{{- if gt (len $stsName) 52 }}
+{{- fail (printf "StatefulSet name %q is %d characters; StatefulSet mode supports at most 52 (pods cannot be created otherwise). Use a shorter release name or set fullnameOverride (at most 49 characters)." $stsName (len $stsName)) }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -62,7 +67,7 @@ spec:
       {{- else if .Values.gcp.enabled }}
       serviceAccountName: {{ .Values.gcp.serviceAccountName }}
       {{- else if .Values.azure.enabled }}
-      serviceAccountName: {{ .Values.azure.serviceAccountName | default .Values.azure.serviceAccount }}
+      serviceAccountName: {{ .Values.azure.serviceAccountName }}
       {{- end }}
       securityContext:
         seccompProfile:
@@ -338,7 +343,12 @@ spec:
         - name: wso2am-entrypoint
           configMap:
             name: {{ template "am-all-in-one.fullname" . }}-conf-entrypoint
+            {{- if and .Values.wso2.deployment.persistence.solrIndexing.enabled .Values.kubernetes.securityContext.runAsGroup }}
+            # the fsGroup becomes the group of the mounted files, so the group needs read/execute
+            defaultMode: 0457
+            {{- else }}
             defaultMode: {{ .Values.kubernetes.configMaps.scripts.defaultMode }}
+            {{- end }}
         - name: wso2am-log4j2
           configMap:
             name: {{ template "am-all-in-one.fullname" . }}-conf-log4j2
@@ -347,7 +357,12 @@ spec:
         - name: wso2am-sh-conf
           configMap:
             name: {{ template "am-all-in-one.fullname" . }}-conf-sh
+            {{- if and .Values.wso2.deployment.persistence.solrIndexing.enabled .Values.kubernetes.securityContext.runAsGroup }}
+            # the fsGroup becomes the group of the mounted files, so the group needs read/execute
+            defaultMode: 0457
+            {{- else }}
             defaultMode: {{ .Values.kubernetes.configMaps.scripts.defaultMode }}
+            {{- end }}
         {{- end }}
         {{- if .Values.wso2.apim.mountFrontendConfig }}
         - name: wso2am-conf-admin-settings
