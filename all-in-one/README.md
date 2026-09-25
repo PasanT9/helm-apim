@@ -115,6 +115,11 @@ With `wso2.deployment.readinessProbe.waitForServerStartup: true` (default) a pod
 fully started (`WSO2 Carbon started`) and the gateway startup health check passes. With the health check alone a new pod
 can receive traffic before the throttle data publisher is initialized, so throttling events are dropped.
 
+The startup check reads `repository/logs/wso2carbon.log`, which is written by the `CARBON_LOGFILE` log4j2 appender. If a
+log4j2 change stops that file from being written (for example, an invalid configuration or console-only logging), the
+pods never become Ready even though the server is running. Set `wso2.deployment.readinessProbe.waitForServerStartup: false`
+to use only the gateway startup health check, as in earlier chart versions.
+
 ## Values
 
 | Key | Type | Default | Description |

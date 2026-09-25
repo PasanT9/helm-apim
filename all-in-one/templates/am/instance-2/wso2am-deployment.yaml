@@ -178,6 +178,7 @@ spec:
             # Ready only after the server has fully started ("WSO2 Carbon started", logged once all components,
             # including the throttle data publisher, are initialized) and the gateway startup health check passes.
             # The marker file keeps the result across log rollovers; the entrypoint removes it on container start.
+            # The health check uses bash /dev/tcp over the HTTP port, so the image does not need curl.
             exec:
               command:
                 - /bin/sh
@@ -185,7 +186,9 @@ spec:
                 - >
                   { test -f /tmp/.apim-server-started ||
                   { grep -qs "WSO2 Carbon started" "${WSO2_SERVER_HOME}/repository/logs/wso2carbon.log" && touch /tmp/.apim-server-started; }; } &&
-                  curl -sk -f -o /dev/null -m {{ .Values.wso2.deployment.readinessProbe.timeoutSeconds | default 5 }} https://localhost:{{ add 9443 (.Values.wso2.apim.portOffset | default 0) }}/api/am/gateway/v2/server-startup-healthcheck
+                  timeout {{ .Values.wso2.deployment.readinessProbe.timeoutSeconds | default 5 }} bash -c 'exec 3<>/dev/tcp/localhost/{{ add 9763 (.Values.wso2.apim.portOffset | default 0) }} &&
+                  printf "GET /api/am/gateway/v2/server-startup-healthcheck HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 &&
+                  read -r status <&3 && case "$status" in "HTTP/1."?" 200"*) exit 0 ;; *) exit 1 ;; esac'
             timeoutSeconds: {{ .Values.wso2.deployment.readinessProbe.timeoutSeconds | default 5 }}
             {{- else }}
             httpGet:
